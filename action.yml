@@ -1,6 +1,6 @@
-name: "Atmos Affected Stacks"
+name: "Atmos Affected Stacks Qventus"
 description: "A GitHub Action to determine the affected stacks for a given pull request"
-author: hello@cloudposse.com
+author: azepeda@qventus.com
 branding:
   icon: "file"
   color: "white"
