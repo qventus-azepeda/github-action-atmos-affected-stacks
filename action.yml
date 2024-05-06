@@ -1,36 +1,37 @@
 name: "Atmos Affected Stacks"
-description: "A GitHub Action to determine the affected stacks between two git refs"
+description: "A GitHub Action to determine the affected stacks for a given pull request"
 author: hello@cloudposse.com
 branding:
   icon: "file"
   color: "white"
 inputs:
-  head-ref:
-    description: The head ref to checkout. If not provided, the head default branch is used.
-    required: false
-    default: ${{ github.sha }}
   default-branch:
     description: The default branch to use for the base ref.
     required: false
     default: ${{ github.event.repository.default_branch }}
-  base-ref:
-    description: The base ref to checkout. If not provided, the head default branch is used.
+  head-ref:
+    description: The head ref to checkout. If not provided, the head default branch is used.
     required: false
   install-atmos:
     description: Whether to install atmos
     required: false
     default: "true"
   atmos-version:
-    description: The version of atmos to install
+    description: The version of atmos to install if install-atmos is true
     required: false
-    default: ">= 1.63.0"
+    default: "latest"
   atmos-config-path:
     description: The path to the atmos.yaml file
-    required: true
+    required: false
+    default: atmos.yaml
   atmos-include-spacelift-admin-stacks:
     description: Whether to include the Spacelift admin stacks of affected stacks in the output
     required: false
     default: "false"
+  terraform-version:
+    description: The version of terraform to install if install-terraform is true
+    required: false
+    default: "latest"
   install-jq:
     description: Whether to install jq
     required: false
@@ -43,10 +44,6 @@ inputs:
     description: Whether to force the installation of jq
     required: false
     default: "true"
-  nested-matrices-count:
-    required: false
-    description: 'Number of nested matrices that should be returned as the output (from 1 to 3)'
-    default: "2"
 outputs:
   affected:
     description: The affected stacks
@@ -55,77 +52,56 @@ outputs:
     description: Whether there are affected stacks
     value: ${{ steps.affected.outputs.affected != '[]' }}
   matrix:
-    description: The affected stacks as matrix structure suitable for extending matrix size workaround (see README)
+    description: A matrix suitable for use for GitHub Actions of the affected stacks
     value: ${{ steps.matrix.outputs.matrix }}
 
 runs:
   using: "composite"
   steps:
-    - uses: actions/checkout@v4
-      with:
-        ref: ${{ inputs.head-ref }}
-
-    - if: ${{ inputs.install-jq == 'true' }}
-      uses: dcarbone/install-jq-action@v2.1.0
-      with:
-        version: ${{ inputs.jq-version }}
-        force: ${{ inputs.jq-force }}
-
     - if: ${{ inputs.install-atmos == 'true' }}
       uses: cloudposse/github-action-setup-atmos@v2
       with:
         atmos-version: ${{ inputs.atmos-version }}
         install-wrapper: false
 
-    - name: Set vars
-      shell: bash
-      run: |-
-        echo "ATMOS_CLI_CONFIG_PATH=$(realpath ${{ inputs.atmos-config-path }})" >> $GITHUB_ENV 
-
-    - name: config
-      shell: bash
-      id: config
-      run: |-
-        echo "group-by=$(atmos describe config -f json | jq -r '.integrations.github.gitops.matrix["group-by"]')" >> $GITHUB_OUTPUT
-        echo "sort-by=$(atmos describe config -f json | jq -r '.integrations.github.gitops.matrix["sort-by"]')" >> $GITHUB_OUTPUT        
+    - if: ${{ inputs.install-jq == 'true' }}
+      uses: dcarbone/install-jq-action@v1.0.1
+      with:
+        version: ${{ inputs.jq-version }}
+        force: ${{ inputs.jq-force }}
 
     # atmos describe affected requires the main branch of the git repo to be present on disk so it can compare the
     # current branch to it to determine the affected stacks. This is different from a file-based git diff in that we
     # look at the contents of the stack files to determine if any have changed.
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4.1.3
       with:
         ref: ${{ inputs.default-branch }}
         path: main-branch
         fetch-depth: 0
 
     - name: checkout head ref
-      id: base-ref
+      id: head-ref
       shell: bash
-      run: git checkout ${{ inputs.base-ref }}
+      run: git checkout ${{ inputs.head-ref }}
       working-directory: main-branch
 
     - name: atmos affected stacks
       id: affected
       shell: bash
+      env:
+        ATMOS_CLI_CONFIG_PATH: ${{inputs.atmos-config-path}}
       run: |
         if [[ "${{ inputs.atmos-include-spacelift-admin-stacks }}" == "true" ]]; then
           atmos describe affected --file affected-stacks.json --verbose=true --repo-path "$GITHUB_WORKSPACE/main-branch" --include-spacelift-admin-stacks=true
         else
           atmos describe affected --file affected-stacks.json --verbose=true --repo-path "$GITHUB_WORKSPACE/main-branch"
         fi
-        affected=$(jq -c '.' affected-stacks.json)
+        affected=$(jq -c '.' < affected-stacks.json)
         printf "%s" "affected=$affected" >> $GITHUB_OUTPUT
 
-    - name: No changes summary
-      if: ${{ steps.affected.outputs.affected == '[]' }}
-      shell: bash
-      run: |-
-        cat ${{ github.action_path }}/assets/summary.md >> $GITHUB_STEP_SUMMARY
-
-    - uses: cloudposse/github-action-matrix-extended@v0
+    - name: build matrix
       id: matrix
-      with:
-        matrix: affected-stacks.json
-        sort-by: ${{ steps.config.outputs.sort-by }}
-        group-by: ${{ steps.config.outputs.group-by }}
-        nested-matrices-count: ${{ inputs.nested-matrices-count }}
+      shell: bash
+      run: |
+        matrix=$(jq -c '{include:[.[]]}' < affected-stacks.json)
+        echo "matrix=$matrix" >> $GITHUB_OUTPUT
